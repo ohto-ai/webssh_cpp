@@ -1,0 +1,12 @@
+[submodule "3rd/spdlog"]
+	path = 3rd/spdlog
+	url = https://github.com/gabime/spdlog
+[submodule "3rd/libssh2"]
+	path = 3rd/libssh2
+	url = https://github.com/libssh2/libssh2
+[submodule "3rd/libhv"]
+	path = 3rd/libhv
+	url = https://github.com/ithewei/libhv
+[submodule "3rd/catch2"]
+	path = 3rd/catch2
+	url = https://github.com/catchorg/Catch2

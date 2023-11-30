@@ -1,16 +1,44 @@
-#include <iostream>
-#include <version.h>
+#include "ssh_connection/ssh_connection.h"
 
-int main() {
-    std::cout << "Hello, World!" << std::endl;
-    std::cout << "AppName: " << VersionHelper::getInstance().AppName << std::endl;
-    std::cout << "Author: " << VersionHelper::getInstance().Author << std::endl;
-    std::cout << "Email: " << VersionHelper::getInstance().Email << std::endl;
-    std::cout << "Version: " << VersionHelper::getInstance().Version << std::endl;
-    std::cout << "GitDescribe: " << VersionHelper::getInstance().GitDescribe << std::endl;
-    std::cout << "GitSha1: " << VersionHelper::getInstance().GitSha1 << std::endl;
-    std::cout << "GitRefSpec: " << VersionHelper::getInstance().GitRefSpec << std::endl;
-    std::cout << "BuildDate: " << VersionHelper::getInstance().BuildDate << std::endl;
-    std::cout << "BuildTime: " << VersionHelper::getInstance().BuildTime << std::endl;
+#include <spdlog/spdlog.h>
+#include <chrono>
+#include <thread>
+
+int main(int argc, char *argv[]) {
+    spdlog::set_level(spdlog::level::debug);
+    if (argc < 4) {
+        fmt::print("Usage: {} <hostname> <username> <password> [command]\n", argv[0]);
+        return 1;
+    }
+    ohtoai::ssh::ssh_session session;
+    auto hostname = argv[1];
+    auto username = argv[2];
+    auto password = argv[3];
+    session.connect(hostname, 22);
+    session.authenticate(username, password);
+    auto channel = session.open_channel();
+
+    channel->request_pty("xterm-256color");
+    channel->shell();
+
+    for (int idx = 4; idx < argc; ++idx) {
+        channel->write(argv[idx]);
+        channel->write("\n");
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    while (channel->is_open()) {
+        auto sz = channel->read();
+        if (sz <= 0) {
+            channel->disconnect();
+            break;
+        }
+        fmt::print("{}", channel->get_buffer().data());
+    }
+
+    session.close_channel(channel->id);
+    session.disconnect();
+
     return 0;
 }
