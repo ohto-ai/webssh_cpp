@@ -66,6 +66,7 @@ void ohtoai::ssh::detail::ssh_channel::write(const byte* data, size_t size) {
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
+    spdlog::debug("[{}] Writing {} bytes", id, size);
     ssize_t rc = libssh2_channel_write(channel, data, size);
     if (rc < 0 && rc != LIBSSH2_ERROR_EAGAIN) {
         char *error_msg = nullptr;
@@ -115,6 +116,7 @@ void ohtoai::ssh::detail::ssh_channel::resize_pty(int width, int height) {
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
+    spdlog::debug("[{}] Pty resized {}x{}", id, width, height);
     while (int rc = libssh2_channel_request_pty_size(channel, width, height)) {
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
@@ -135,6 +137,9 @@ void ohtoai::ssh::detail::ssh_channel::close() {
     if (channel != nullptr) {
         libssh2_channel_free(channel);
         channel = nullptr;
+        if (session) {
+            session->close_channel(id);
+        }
     }
 }
 

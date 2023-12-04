@@ -69,4 +69,7 @@ namespace ohtoai::ssh
 
     using detail::ssh_channel;
     using detail::ssh_session;
+    using detail::ssh_channel_ptr;
+    using detail::ssh_session_ptr;
+    using detail::channel_id_t;
 }
