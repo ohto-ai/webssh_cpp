@@ -357,11 +357,11 @@ void ohtoai::ssh::detail::ssh_session::wait_socket() {
     rc = select((int)(sock + 1), readfd, writefd, nullptr, &timeout);
 }
 
-ohtoai::ssh::detail::session_id_t ohtoai::ssh::detail::ssh_session::generate_id(const std::string &host, int port, const std::string &username) {
+ohtoai::ssh::detail::session_id_t ohtoai::ssh::detail::ssh_session::generate_id(const std::string &host, int port, const std::string &username, const std::string &custom) {
     if (username.empty())
-        return fmt::format("{}:{}", host, port);
+        return fmt::format("{}:{}{}", host, port, custom);
     else
-        return fmt::format("{}@{}:{}", username, host, port);
+        return fmt::format("{}@{}:{}{}", username, host, port, custom);
 }
 
 ohtoai::ssh::detail::session_id_t ohtoai::ssh::detail::ssh_session::get_id() const {

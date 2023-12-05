@@ -79,7 +79,7 @@ namespace ohtoai::ssh
             ssh_session();
             ~ssh_session();
 
-            static session_id_t generate_id(const std::string &host, int port, const std::string &username);
+            static session_id_t generate_id(const std::string &host, int port, const std::string &username, const std::string &custom = "");
             session_id_t get_id() const;
             void connect(const std::string &host, int port);
             void authenticate(const std::string &username, const std::string &password);

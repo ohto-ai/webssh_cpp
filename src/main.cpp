@@ -113,7 +113,7 @@ int main(int argc, char *argv[]) {
         auto password = ctx->get("password");
         auto term = ctx->get("term");
 
-        auto session_key = ohtoai::ssh::ssh_session::generate_id(hostname, port, username);
+        auto session_key = ohtoai::ssh::ssh_session::generate_id(hostname, port, username, fmt::format("{}_{}", ctx->ip(), ctx->port()));
 
         if (!ssh_context::exists_session(session_key)) {
             ohtoai::ssh::ssh_session_ptr session{};
