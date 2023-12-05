@@ -12,9 +12,36 @@ namespace ohtoai::ssh
 {
     namespace detail
     {
+
+        struct ssh_buffer {
+            char *data;
+            size_t size;
+            size_t capacity;
+
+            ssh_buffer();
+            ssh_buffer(size_t capacity);
+
+            ~ssh_buffer();
+
+            operator char*();
+            operator const char*() const;
+
+            void reserve(size_t capacity);
+
+            void resize(size_t size);
+
+            void clear();
+
+            void append(const char *data, size_t size);
+
+            void append(const std::string &data);
+
+            void append(const ssh_buffer &buffer);
+        };
+
         using byte = char;
-        using bytes = std::vector<byte>;
         using channel_id_t = std::string;
+        using session_id_t = std::string;
 
         class ssh_channel;
         class ssh_session;
@@ -28,10 +55,9 @@ namespace ohtoai::ssh
             ~ssh_channel();
 
             void reserve_buffer(size_t size);
-            bytes& get_buffer();
+            const ssh_buffer& get_buffer();
             bool is_open();
             long read();
-            void write(const bytes& data);
             void write(const byte* data, size_t size);
             void write(const std::string &data);
             void shell();
@@ -43,7 +69,7 @@ namespace ohtoai::ssh
         protected:
             LIBSSH2_CHANNEL *channel;
             ssh_session *session;
-            bytes buffer;
+            ssh_buffer buffer {4096};
         };
 
 
@@ -53,6 +79,8 @@ namespace ohtoai::ssh
             ssh_session();
             ~ssh_session();
 
+            static session_id_t generate_id(const std::string &host, int port, const std::string &username);
+            session_id_t get_id() const;
             void connect(const std::string &host, int port);
             void authenticate(const std::string &username, const std::string &password);
             ssh_channel_ptr open_channel();
@@ -60,6 +88,9 @@ namespace ohtoai::ssh
             void close_channel(const channel_id_t &id);
             void wait_socket();
         protected:
+            std::string host;
+            int port;
+            std::string username;
             LIBSSH2_SESSION *session;
             std::map<channel_id_t, ssh_channel_ptr> channels;
             int sock;
@@ -72,4 +103,5 @@ namespace ohtoai::ssh
     using detail::ssh_channel_ptr;
     using detail::ssh_session_ptr;
     using detail::channel_id_t;
+    using detail::session_id_t;
 }

@@ -1,5 +1,6 @@
 #include "ssh_connection.h"
 
+#include <memory>
 #include <libssh2.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -9,11 +10,60 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/fmt.h>
 
+ohtoai::ssh::detail::ssh_buffer::ssh_buffer() : data(nullptr), size(0), capacity(0) {}
+ohtoai::ssh::detail::ssh_buffer::ssh_buffer(size_t capacity) : data(nullptr), size(0), capacity(capacity) {
+    data = new char[capacity];
+}
+
+ohtoai::ssh::detail::ssh_buffer::~ssh_buffer() {
+    delete[] data;
+}
+
+ohtoai::ssh::detail::ssh_buffer::operator char*() {
+    return data;
+}
+ohtoai::ssh::detail::ssh_buffer::operator const char*() const{
+    return data;
+}
+
+void ohtoai::ssh::detail::ssh_buffer::reserve(size_t capacity) {
+    if (capacity <= this->capacity) {
+        return;
+    }
+    char *new_data = new char[capacity];
+    memcpy(new_data, data, size);
+    delete[] data;
+    data = new_data;
+    this->capacity = capacity;
+}
+
+void ohtoai::ssh::detail::ssh_buffer::resize(size_t size) {
+    reserve(size);
+    this->size = size;
+}
+
+void ohtoai::ssh::detail::ssh_buffer::clear() {
+    size = 0;
+}
+
+void ohtoai::ssh::detail::ssh_buffer::append(const char *data, size_t size) {
+    reserve(this->size + size);
+    memcpy(this->data + this->size, data, size);
+    this->size += size;
+}
+
+void ohtoai::ssh::detail::ssh_buffer::append(const std::string &data) {
+    append(data.data(), data.size());
+}
+
+void ohtoai::ssh::detail::ssh_buffer::append(const ssh_buffer &buffer) {
+    append(buffer.data, buffer.size);
+}
+
 ohtoai::ssh::detail::ssh_channel::ssh_channel():
     id(std::to_string(reinterpret_cast<uintptr_t>(this))) {
     channel = nullptr;
     session = nullptr;
-    reserve_buffer(1024);
 }
 
 ohtoai::ssh::detail::ssh_channel::~ssh_channel() {
@@ -25,7 +75,7 @@ void ohtoai::ssh::detail::ssh_channel::reserve_buffer(size_t size) {
     buffer.reserve(size);
 }
 
-ohtoai::ssh::detail::bytes& ohtoai::ssh::detail::ssh_channel::get_buffer() {
+const ohtoai::ssh::detail::ssh_buffer& ohtoai::ssh::detail::ssh_channel::get_buffer() {
     return buffer;
 }
 
@@ -34,11 +84,10 @@ bool ohtoai::ssh::detail::ssh_channel::is_open() {
 }
 
 long ohtoai::ssh::detail::ssh_channel::read() {
-    memset(buffer.data(), 0, buffer.capacity());
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
-    long rc = libssh2_channel_read(channel, buffer.data(), buffer.capacity());
+    long rc = libssh2_channel_read(channel, buffer.data, buffer.capacity);
 
     if (rc == LIBSSH2_ERROR_EAGAIN) {
         rc = 0;
@@ -47,31 +96,25 @@ long ohtoai::ssh::detail::ssh_channel::read() {
     if (rc < 0) {
         char *error_msg = nullptr;
         libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
-        throw std::runtime_error(fmt::format("[{}] <{}> {}", id, rc, error_msg));
+        throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
     }
+    buffer.resize(rc);
 
-    if (rc < buffer.capacity()) {
-        buffer[rc] = '\0';
+    if (rc >0) {
+        spdlog::debug("[{}] Read {} bytes", id, rc);
     }
-
-    spdlog::debug("[{}] Read {} bytes", id, rc);
     return rc;
-}
-
-void ohtoai::ssh::detail::ssh_channel::write(const bytes& data) {
-    write(data.data(), data.size());
 }
 
 void ohtoai::ssh::detail::ssh_channel::write(const byte* data, size_t size) {
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
-    spdlog::debug("[{}] Writing {} bytes", id, size);
     ssize_t rc = libssh2_channel_write(channel, data, size);
     if (rc < 0 && rc != LIBSSH2_ERROR_EAGAIN) {
         char *error_msg = nullptr;
         libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
-        throw std::runtime_error(fmt::format("[{}] <{}> {}", id, rc, error_msg));
+        throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
     }
     spdlog::debug("[{}] Wrote {} bytes", id, rc);
 }
@@ -88,7 +131,7 @@ void ohtoai::ssh::detail::ssh_channel::shell() {
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
             libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
-            throw std::runtime_error(fmt::format("[{}] <{}> {}", id, rc, error_msg));
+            throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
         }
         session->wait_socket();
     }
@@ -105,7 +148,7 @@ void ohtoai::ssh::detail::ssh_channel::request_pty(const std::string &pty_type) 
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
             libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
-            throw std::runtime_error(fmt::format("[{}] <{}> {}", id, rc, error_msg));
+            throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
         }
         session->wait_socket();
     }
@@ -121,7 +164,7 @@ void ohtoai::ssh::detail::ssh_channel::resize_pty(int width, int height) {
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
             libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
-            throw std::runtime_error(fmt::format("[{}] <{}> {}", id, rc, error_msg));
+            throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
         }
         session->wait_socket();
     }
@@ -166,6 +209,8 @@ ohtoai::ssh::detail::ssh_session::~ssh_session() {
 }
 
 void ohtoai::ssh::detail::ssh_session::connect(const std::string &host, int port) {
+    this->host = host;
+    this->port = port;
     if (session != nullptr) {
         throw std::runtime_error("Session is already opened");
     }
@@ -213,13 +258,14 @@ void ohtoai::ssh::detail::ssh_session::connect(const std::string &host, int port
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
             libssh2_session_last_error(session, &error_msg, nullptr, 0);
-            throw std::runtime_error(fmt::format("<{}> {}", rc, error_msg));
+            throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", get_id(), __LINE__, rc, error_msg));
         }
     }
-    spdlog::debug("Session handshaked");
+    spdlog::info("[{}] Session connected", get_id());
 }
 
 void ohtoai::ssh::detail::ssh_session::authenticate(const std::string &username, const std::string &password) {
+    this->username = username;
     if (session == nullptr) {
         throw std::runtime_error("Session is not opened");
     }
@@ -227,10 +273,10 @@ void ohtoai::ssh::detail::ssh_session::authenticate(const std::string &username,
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
             libssh2_session_last_error(session, &error_msg, nullptr, 0);
-            throw std::runtime_error(fmt::format("<{}> {}", rc, error_msg));
+            throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", get_id(), __LINE__, rc, error_msg));
         }
     }
-    spdlog::debug("Session authenticated");
+    spdlog::info("[{}] Session authenticated", get_id());
 }
 
 ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_session::open_channel() {
@@ -247,15 +293,15 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_session::open_chan
         char *error_msg = nullptr;
         auto rc = libssh2_session_last_error(session, &error_msg, nullptr, 0);
         if (rc != LIBSSH2_ERROR_EAGAIN) {
-            throw std::runtime_error(fmt::format("[{}] <{}> {}", channel->id, rc, error_msg));
+            throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", channel->id, __LINE__, rc, error_msg));
         }
         wait_socket();
     } while (true);
 
-    spdlog::debug("[{}] Channel opened", channel->id);
+    spdlog::info("[{}] Channel opened", channel->id);
 
     channels.emplace(channel->id, channel);
-    spdlog::debug("Channels opened {}", channels.size());
+    spdlog::info("[{}] Session channels opened {}", get_id(), channels.size());
     return channel;
 }
 
@@ -264,7 +310,11 @@ void ohtoai::ssh::detail::ssh_session::close_channel(const channel_id_t &id) {
     if (iter != channels.end()) {
         iter->second->close();
         channels.erase(iter);
-        spdlog::debug("Channels opened {}", channels.size());
+        spdlog::info("[{}] Channel closed", iter->second->id);
+        spdlog::info("[{}] Session channels opened {}", get_id(), channels.size());
+    }
+    if (channels.empty()) {
+        disconnect();
     }
 }
 
@@ -276,6 +326,7 @@ void ohtoai::ssh::detail::ssh_session::disconnect() {
         libssh2_session_disconnect(session, "Bye bye");
         libssh2_session_free(session);
         session = nullptr;
+        spdlog::info("[{}] Session disconnected", get_id());
     }
 }
 
@@ -304,4 +355,15 @@ void ohtoai::ssh::detail::ssh_session::wait_socket() {
         writefd = &fd;
 
     rc = select((int)(sock + 1), readfd, writefd, nullptr, &timeout);
+}
+
+ohtoai::ssh::detail::session_id_t ohtoai::ssh::detail::ssh_session::generate_id(const std::string &host, int port, const std::string &username) {
+    if (username.empty())
+        return fmt::format("{}:{}", host, port);
+    else
+        return fmt::format("{}@{}:{}", username, host, port);
+}
+
+ohtoai::ssh::detail::session_id_t ohtoai::ssh::detail::ssh_session::get_id() const {
+    return generate_id(host, port, username);
 }
