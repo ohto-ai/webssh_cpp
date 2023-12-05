@@ -98,7 +98,8 @@ int main(int argc, char *argv[]) {
             }
             catch (const std::exception& e) {
                 spdlog::error("{}", e.what());
-                return ctx->send(e.what(), 500);
+                ctx->setStatus(500);
+                return ctx->send(e.what());
             }
             sessions[session_key] = session;
         }
@@ -116,7 +117,7 @@ int main(int argc, char *argv[]) {
 
     hv::WebSocketServer server;
     server.port = 8080;
-    
+
     server.registerHttpService(&http);
     server.registerWebSocketService(&ws);
     server.run();
