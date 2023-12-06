@@ -138,6 +138,9 @@ int main(int argc, char *argv[]) {
         }
         auto session = ssh_context::sessions[session_key];
         auto ssh_channel = session->open_channel();
+        ssh_channel->set_env("LC_WSSH_WEBSOCKET_HOST", ctx->host());
+        ssh_channel->set_env("LC_WSSH_WEBSOCKET_URL", ctx->url());
+        ssh_channel->set_env("LC_WSSH_WEBSOCKET_CLIENT_IP", ctx->header("X-Real-IP", ctx->ip()));
         ssh_channel->request_pty(term);
         ssh_channel->shell();
         ssh_context::channels[ssh_channel->id] = ssh_channel;

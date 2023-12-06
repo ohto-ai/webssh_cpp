@@ -720,8 +720,7 @@ jQuery(function($){
   function connect_with_options(data) {
     // use data from the arguments
     var form = document.querySelector(form_id),
-        url = data.url || form.action,
-        _xsrf = form.querySelector('input[name="_xsrf"]');
+        url = data.url || form.action;
 
     var result = validate_form_data(wrap_object(data));
     if (!result.valid) {
@@ -730,7 +729,6 @@ jQuery(function($){
     }
 
     data.term = term_type.val();
-    data._xsrf = _xsrf.value;
     if (event_origin) {
       data._origin = event_origin;
     }

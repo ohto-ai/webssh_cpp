@@ -313,7 +313,7 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_session::open_chan
     } while (true);
 
     try {
-        channel->set_env("WS_SSH_CHANNEL_ID", channel->id);
+        channel->set_env("LC_WSSH_CHANNEL_ID", channel->id);
     }
     catch (const std::exception& e) {
         spdlog::error("[{}] Try to set env, but failed.", channel->id);
