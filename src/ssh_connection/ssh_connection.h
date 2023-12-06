@@ -61,6 +61,7 @@ namespace ohtoai::ssh
             void write(const byte* data, size_t size);
             void write(const std::string &data);
             void shell();
+            void set_env(const std::string &name, const std::string &value);
             void request_pty(const std::string &pty_type = "vanilla");
             void resize_pty(int width, int height);
             void disconnect();

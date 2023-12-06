@@ -123,6 +123,21 @@ void ohtoai::ssh::detail::ssh_channel::write(const std::string &data) {
     write(reinterpret_cast<const byte*>(data.data()), data.size());
 }
 
+void ohtoai::ssh::detail::ssh_channel::set_env(const std::string &name, const std::string &value) {
+    if (channel == nullptr) {
+        throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
+    }
+    while (int rc = libssh2_channel_setenv(channel, name.c_str(), value.c_str())) {
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            char *error_msg = nullptr;
+            libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
+            throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
+        }
+        session->wait_socket();
+    }
+    spdlog::debug("[{}] Env set {}={}", id, name, value);
+}
+
 void ohtoai::ssh::detail::ssh_channel::shell() {
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
@@ -143,7 +158,6 @@ void ohtoai::ssh::detail::ssh_channel::request_pty(const std::string &pty_type) 
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
 
-    // libssh2_channel_request_pty(channel, pty_type.c_str());
     while (int rc = libssh2_channel_request_pty(channel, pty_type.c_str())) {
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
@@ -220,7 +234,7 @@ void ohtoai::ssh::detail::ssh_session::connect(const std::string &host, int port
         throw std::runtime_error("Failed to create socket");
     }
     spdlog::debug("Socket created");
-    
+
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
@@ -297,6 +311,14 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_session::open_chan
         }
         wait_socket();
     } while (true);
+
+    try {
+        channel->set_env("WS_SSH_CHANNEL_ID", channel->id);
+    }
+    catch (const std::exception& e) {
+        spdlog::error("[{}] Try to set env, but failed.", channel->id);
+        spdlog::error("{}", e.what());
+    }
 
     spdlog::info("[{}] Channel opened", channel->id);
 
