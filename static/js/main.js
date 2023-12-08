@@ -603,6 +603,7 @@ jQuery(function($){
         port = data.get('port'),
         username = data.get('username'),
         pk = data.get('privatekey'),
+        channel = data.get('channel'),
         result = {
           valid: false,
           data: data,
@@ -610,36 +611,43 @@ jQuery(function($){
         },
         errors = [], size;
 
-    if (!hostname) {
-      errors.push('Value of hostname is required.');
-    } else {
-      if (!hostname_tester.test(hostname)) {
-         errors.push('Invalid hostname: ' + hostname);
+    if (!channel) {
+      if (!hostname) {
+        errors.push('Value of hostname is required.');
+      } else {
+        if (!hostname_tester.test(hostname)) {
+          errors.push('Invalid hostname: ' + hostname);
+        }
       }
-    }
 
-    if (!port) {
-      port = 22;
-    } else {
-      if (!(port > 0 && port <= 65535)) {
-        errors.push('Invalid port: ' + port);
+      if (!port) {
+        port = 22;
+      } else {
+        if (!(port > 0 && port <= 65535)) {
+          errors.push('Invalid port: ' + port);
+        }
       }
-    }
 
-    if (!username) {
-      errors.push('Value of username is required.');
-    }
+      if (!username) {
+        errors.push('Value of username is required.');
+      }
 
-    if (pk) {
-      size = pk.size || pk.length;
-      if (size > key_max_size) {
-        errors.push('Invalid private key: ' + pk.name || '');
+      if (pk) {
+        size = pk.size || pk.length;
+        if (size > key_max_size) {
+          errors.push('Invalid private key: ' + pk.name || '');
+        }
       }
     }
 
     if (!errors.length || debug) {
       result.valid = true;
-      result.title = username + '@' + hostname + ':'  + port;
+      if (channel) {
+        result.title = channel;
+      }
+      else {
+        result.title = username + '@' + hostname + ':'  + port;
+      }
     }
     result.errors = errors;
 
@@ -747,7 +755,7 @@ jQuery(function($){
   }
 
 
-  function connect(hostname, port, username, password, privatekey, passphrase, totp) {
+  function connect(hostname, port, username, password, privatekey, passphrase, totp, channel) {
     // for console use
     var result, opts;
 
@@ -767,7 +775,8 @@ jQuery(function($){
           password: password,
           privatekey: privatekey,
           passphrase: passphrase,
-          totp: totp
+          totp: totp,
+          channel: channel
         };
       } else {
         opts = hostname;
