@@ -9,56 +9,38 @@
 #include <stdexcept>
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/fmt.h>
+#include <unistd.h>
 
-ohtoai::ssh::detail::ssh_buffer::ssh_buffer() : data(nullptr), size(0), capacity(0) {}
-ohtoai::ssh::detail::ssh_buffer::ssh_buffer(size_t capacity) : data(nullptr), size(0), capacity(capacity) {
-    data = new char[capacity];
-}
+struct DebugInfo {
+    const char *file = nullptr;
+    const char *func_name = nullptr;
+    int line = 0;
+};
 
-ohtoai::ssh::detail::ssh_buffer::~ssh_buffer() {
-    delete[] data;
-}
-
-ohtoai::ssh::detail::ssh_buffer::operator char*() {
-    return data;
-}
-ohtoai::ssh::detail::ssh_buffer::operator const char*() const{
-    return data;
-}
-
-void ohtoai::ssh::detail::ssh_buffer::reserve(size_t capacity) {
-    if (capacity <= this->capacity) {
-        return;
+// Internal implementation for functions with non-void return type
+template <typename Result, typename Func, typename... Args>
+auto wrapSSHFunctionImpl(const DebugInfo &dbg_info, LIBSSH2_SESSION* session, Func func, Args&&... args) -> decltype(func(std::forward<Args>(args)...)){
+    if constexpr (std::is_same_v<Result, void>) {
+        return func(std::forward<Args>(args)...);
     }
-    char *new_data = new char[capacity];
-    memcpy(new_data, data, size);
-    delete[] data;
-    data = new_data;
-    this->capacity = capacity;
+    else {
+        Result rc {};
+        while (true) {
+            rc = func(std::forward<Args>(args)...);
+            if (rc > 0) {
+                return rc;
+            }
+            else if (rc != LIBSSH2_ERROR_EAGAIN) {
+                char *error_msg = nullptr;
+                libssh2_session_last_error(session, &error_msg, nullptr, 0);
+                throw std::runtime_error(fmt::format("{}:{} ({}) {}", dbg_info.file, dbg_info.line, rc, error_msg));
+            }
+        }
+        return rc;
+    }
 }
 
-void ohtoai::ssh::detail::ssh_buffer::resize(size_t size) {
-    reserve(size);
-    this->size = size;
-}
-
-void ohtoai::ssh::detail::ssh_buffer::clear() {
-    size = 0;
-}
-
-void ohtoai::ssh::detail::ssh_buffer::append(const char *data, size_t size) {
-    reserve(this->size + size);
-    memcpy(this->data + this->size, data, size);
-    this->size += size;
-}
-
-void ohtoai::ssh::detail::ssh_buffer::append(const std::string &data) {
-    append(data.data(), data.size());
-}
-
-void ohtoai::ssh::detail::ssh_buffer::append(const ssh_buffer &buffer) {
-    append(buffer.data, buffer.size);
-}
+#define WRAP_SSH_FUNCTION(session, func, ...) wrapSSHFunctionImpl<decltype(func(__VA_ARGS__)), decltype(func), decltype(__VA_ARGS__)>({__FILE__, __func__, __LINE__}, session, func, __VA_ARGS__)
 
 ohtoai::ssh::detail::ssh_channel::ssh_channel():
     id(std::to_string(reinterpret_cast<uintptr_t>(this))) {
@@ -75,7 +57,7 @@ void ohtoai::ssh::detail::ssh_channel::reserve_buffer(size_t size) {
     buffer.reserve(size);
 }
 
-const ohtoai::ssh::detail::ssh_buffer& ohtoai::ssh::detail::ssh_channel::get_buffer() {
+const ohtoai::mini_buffer& ohtoai::ssh::detail::ssh_channel::get_buffer() {
     return buffer;
 }
 
@@ -184,7 +166,7 @@ void ohtoai::ssh::detail::ssh_channel::resize_pty(int width, int height) {
     }
 }
 
-void ohtoai::ssh::detail::ssh_channel::disconnect() {
+void ohtoai::ssh::detail::ssh_channel::send_eof() {
     if (channel != nullptr) {
         libssh2_channel_send_eof(channel);
     }
@@ -229,8 +211,8 @@ void ohtoai::ssh::detail::ssh_session::connect(const std::string &host, int port
         throw std::runtime_error("Session is already opened");
     }
 
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == -1) {
+    sock = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == LIBSSH2_INVALID_SOCKET) {
         throw std::runtime_error("Failed to create socket");
     }
     spdlog::debug("Socket created");
@@ -350,6 +332,10 @@ void ohtoai::ssh::detail::ssh_session::disconnect() {
         session = nullptr;
         spdlog::info("[{}] Session disconnected", get_id());
     }
+    if (sock != LIBSSH2_INVALID_SOCKET) {
+        ::shutdown(sock, 2);
+        ::close(sock);
+    }
 }
 
 void ohtoai::ssh::detail::ssh_session::wait_socket() {
@@ -388,4 +374,90 @@ ohtoai::ssh::detail::session_id_t ohtoai::ssh::detail::ssh_session::generate_id(
 
 ohtoai::ssh::detail::session_id_t ohtoai::ssh::detail::ssh_session::get_id() const {
     return generate_id(host, port, username);
+}
+
+ohtoai::ssh::detail::ssh_pty_connection_manager::~ssh_pty_connection_manager() {
+    spdlog::debug("ssh_pty_connection_manager destroyed");
+
+    for (auto &session : sessions) {
+        session.second->disconnect();
+    }
+
+    spdlog::debug("ssh_pty_connection_manager sessions closed");
+
+    sessions.clear();
+    channels.clear();
+}
+
+ohtoai::ssh::detail::ssh_pty_connection_manager &ohtoai::ssh::ssh_pty_connection_manager::get_instance() {
+    static ssh_pty_connection_manager instance;
+    return instance;
+}
+
+void ohtoai::ssh::detail::ssh_pty_connection_manager::set_max_channel_in_session(size_t max_channel_in_session) {
+    this->max_channel_in_session = max_channel_in_session;
+}
+
+size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_max_channel_in_session() const {
+    return max_channel_in_session;
+}
+
+size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel_count(detail::session_id_t session_id) const {
+    std::lock_guard<std::mutex> lock(sessions_mutex);
+    auto begin = sessions.lower_bound(session_id);
+    auto end = sessions.upper_bound(session_id);
+    size_t count = 0;
+    for (auto iter = begin; iter != end; ++iter) {
+        count += iter->second->channels.size();
+    }
+    return count;
+}
+
+size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel_count() const {
+    return channels.size();
+}
+
+size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel_alive_count() const {
+    return std::count_if(channels.begin(), channels.end(), [](const auto &pair) {
+        return !pair.second.expired();
+    });
+}
+
+size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_session_count() const {
+    return sessions.size();
+}
+
+ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel(const std::string &host, int port, const std::string &username, const std::string &password) {
+    auto session_id = detail::ssh_session::generate_id(host, port, username);
+
+    auto session_iter = [this, &session_id]{
+        std::lock_guard<std::mutex> lock(sessions_mutex);
+        // find first session that has less than max_channel_in_session channels
+        auto begin = sessions.lower_bound(session_id);
+        auto end = sessions.upper_bound(session_id);
+        return std::find_if(begin, end, [this](const auto &pair) {
+            return pair.second->channels.size() < max_channel_in_session;
+        });
+    }();
+
+    // if no session found, create new session
+    if (session_iter == sessions.end()) {
+        auto session = std::make_shared<detail::ssh_session>();
+        session->connect(host, port);
+        session->authenticate(username, password);
+        std::lock_guard<std::mutex> lock(sessions_mutex);
+        session_iter = sessions.emplace(session_id, session);
+    }
+    auto session = session_iter->second;
+    auto channel = session->open_channel();
+    channels.emplace(channel->id, channel);
+    return channel;
+}
+
+ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel(const detail::session_id_t &id) {
+    auto iter = channels.find(id);
+    if (iter == channels.end()) {
+        return nullptr;
+    }
+    return iter->second.lock();
 }
