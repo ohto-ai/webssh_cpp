@@ -134,23 +134,33 @@ int main(int argc, char *argv[]) {
         auto username = ctx->get("username");
         auto password = ctx->get("password");
         auto term = ctx->get("term");
+        auto channel_id = ctx->get("channel_id");
 
-        if (hostname.empty() || username.empty() || password.empty()) {
-            ctx->setStatus(HTTP_STATUS_FORBIDDEN);
-            return ctx->send("hostname, username, password are required");
+        ohtoai::ssh::ssh_channel_ptr ssh_channel {};
+        if (!channel_id.empty()) {
+            ssh_channel = ohtoai::ssh::ssh_pty_connection_manager::get_instance().get_channel(channel_id);
+            if (ssh_channel == nullptr) {
+                ctx->setStatus(HTTP_STATUS_FORBIDDEN);
+                return ctx->send("ssh_channel is null");
+            }
+            // todo: Need attach to original ssh_channel
         }
-
-        auto ssh_channel = ohtoai::ssh::ssh_pty_connection_manager::get_instance().get_channel(hostname, port, username, password);
-        if (ssh_channel == nullptr) {
-            ctx->setStatus(HTTP_STATUS_FORBIDDEN);
-            return ctx->send("ssh_channel is null");
+        else {
+            if (hostname.empty() || username.empty() || password.empty()) {
+                ctx->setStatus(HTTP_STATUS_FORBIDDEN);
+                return ctx->send("hostname, username, password are required");
+            }
+            ssh_channel = ohtoai::ssh::ssh_pty_connection_manager::get_instance().get_channel(hostname, port, username, password);
+            if (ssh_channel == nullptr) {
+                ctx->setStatus(HTTP_STATUS_FORBIDDEN);
+                return ctx->send("ssh_channel is null");
+            }
+            ssh_channel->set_env("LC_WSSH_WEBSOCKET_HOST", ctx->host());
+            ssh_channel->set_env("LC_WSSH_WEBSOCKET_URL", ctx->url());
+            ssh_channel->set_env("LC_WSSH_WEBSOCKET_CLIENT_IP", ctx->header("X-Real-IP", ctx->ip()));
+            ssh_channel->request_pty(term);
+            ssh_channel->shell();
         }
-
-        ssh_channel->set_env("LC_WSSH_WEBSOCKET_HOST", ctx->host());
-        ssh_channel->set_env("LC_WSSH_WEBSOCKET_URL", ctx->url());
-        ssh_channel->set_env("LC_WSSH_WEBSOCKET_CLIENT_IP", ctx->header("X-Real-IP", ctx->ip()));
-        ssh_channel->request_pty(term);
-        ssh_channel->shell();
 
         hv::Json resp;
         resp["id"] = ssh_channel->id;
