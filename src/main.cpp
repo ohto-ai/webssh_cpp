@@ -31,16 +31,36 @@ public:
     ~ssh_context() {
         close();
     }
+    inline static std::map<ohtoai::ssh::channel_id_t, std::weak_ptr<ssh_context>> ssh_contexts;
 };
 
 int main(int argc, char *argv[]) {
-    // spdlog::set_level(spdlog::level::debug);
+    if (argc > 1 && strcmp(argv[1], "-d") == 0 ) {
+        spdlog::set_level(spdlog::level::debug);
+    }
 
     hv::WebSocketService ws;
     ws.onopen = [](const WebSocketChannelPtr& channel, const HttpRequestPtr& req) {
         spdlog::debug("{} {}", channel->peeraddr(), req->Path());
         auto channel_id = req->GetParam("id");
+        if (channel_id.empty()) {
+            spdlog::error("channel_id is empty");
+            return;
+        }
+
+        // find ssh_context by channel_id
+        auto it = ssh_context::ssh_contexts.find(channel_id);
+        if (it != ssh_context::ssh_contexts.end()) {
+            auto ctx = it->second.lock();
+            if (ctx != nullptr) {
+                ctx->channels_read.emplace(channel);
+                spdlog::info("[{}] Add channel to existing ssh_context", channel_id);
+                return;
+            }
+        }
+
         auto ctx = channel->newContextPtr<ssh_context>();
+        ssh_context::ssh_contexts.emplace(channel_id, ctx);
         ctx->ssh_channel_id = channel_id;
         ctx->channels_read.emplace(channel);
         ctx->channels_write.emplace(channel);
@@ -134,7 +154,10 @@ int main(int argc, char *argv[]) {
         auto username = ctx->get("username");
         auto password = ctx->get("password");
         auto term = ctx->get("term");
-        auto channel_id = ctx->get("channel_id");
+        auto channel_id = ctx->get("channel");
+
+        spdlog::debug("Receive login request: hostname={}, port={}, username={}, password={}, term={}, channel_id={}",
+                      hostname, port, username, password, term, channel_id);
 
         ohtoai::ssh::ssh_channel_ptr ssh_channel {};
         if (!channel_id.empty()) {
