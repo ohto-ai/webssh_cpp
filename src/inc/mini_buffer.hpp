@@ -18,6 +18,27 @@ namespace ohtoai
                 data = new char[capacity];
             }
 
+            mini_buffer(const mini_buffer&) = delete;
+            mini_buffer& operator=(const mini_buffer&) = delete;
+
+            mini_buffer(mini_buffer&& other) noexcept
+                : data(other.data), size(other.size), capacity(other.capacity) {
+                other.data = nullptr;
+                other.size = 0;
+                other.capacity = 0;
+            }
+            mini_buffer& operator=(mini_buffer&& other) noexcept {
+                if (this != &other) {
+                    delete[] data;
+                    data = other.data;
+                    size = other.size;
+                    capacity = other.capacity;
+                    other.data = nullptr;
+                    other.size = 0;
+                    other.capacity = 0;
+                }
+                return *this;
+            }
 
             ~mini_buffer() {
                 delete[] data;

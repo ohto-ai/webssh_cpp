@@ -1,6 +1,7 @@
 #include "ssh_connection.h"
 
 #include <memory>
+#include <mutex>
 #include <libssh2.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -92,13 +93,21 @@ void ohtoai::ssh::detail::ssh_channel::write(const byte* data, size_t size) {
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
-    ssize_t rc = libssh2_channel_write(channel, data, size);
-    if (rc < 0 && rc != LIBSSH2_ERROR_EAGAIN) {
-        char *error_msg = nullptr;
-        libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
-        throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
+    size_t total_written = 0;
+    while (total_written < size) {
+        ssize_t rc = libssh2_channel_write(channel, data + total_written, size - total_written);
+        if (rc == LIBSSH2_ERROR_EAGAIN) {
+            session->wait_socket();
+            continue;
+        }
+        if (rc < 0) {
+            char *error_msg = nullptr;
+            libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
+            throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
+        }
+        total_written += static_cast<size_t>(rc);
     }
-    spdlog::debug("[{}] Wrote {} bytes", id, rc);
+    spdlog::debug("[{}] Wrote {} bytes", id, total_written);
 }
 
 void ohtoai::ssh::detail::ssh_channel::write(const std::string &data) {
@@ -176,20 +185,22 @@ void ohtoai::ssh::detail::ssh_channel::close() {
     if (channel != nullptr) {
         libssh2_channel_free(channel);
         channel = nullptr;
-        if (session) {
-            session->close_channel(id);
+        if (session != nullptr) {
+            auto* sess = session;
+            session = nullptr;
+            sess->close_channel(id);
         }
     }
 }
 
 ohtoai::ssh::detail::ssh_session::ssh_session() {
-    if (counter == 0) {
-        // init sshlib
+    static std::once_flag libssh2_init_flag;
+    std::call_once(libssh2_init_flag, []() {
         spdlog::debug("libssh2 init");
         if (int rc = libssh2_init(0)) {
             throw std::runtime_error(fmt::format("Failed to initialize ssh library <{}>", rc));
         }
-    }
+    });
     ++counter;
     session = nullptr;
 }
@@ -312,10 +323,8 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_session::open_chan
 void ohtoai::ssh::detail::ssh_session::close_channel(const channel_id_t &id) {
     auto iter = channels.find(id);
     if (iter != channels.end()) {
-        iter->second->close();
         channels.erase(iter);
-        spdlog::info("[{}] Channel closed", iter->second->id);
-        spdlog::info("[{}] Session channels opened {}", get_id(), channels.size());
+        spdlog::info("[{}] Channel deregistered from session [{}], remaining {}", id, get_id(), channels.size());
     }
     if (channels.empty()) {
         disconnect();
@@ -324,8 +333,13 @@ void ohtoai::ssh::detail::ssh_session::close_channel(const channel_id_t &id) {
 
 void ohtoai::ssh::detail::ssh_session::disconnect() {
     if (session != nullptr) {
-        for (auto &channel : channels) {
-            channel.second->close();
+        // Move channels out to avoid modification-during-iteration and
+        // prevent recursive disconnect() calls triggered by close_channel().
+        auto channels_to_close = std::move(channels);
+        channels.clear();
+        for (auto &[cid, ch] : channels_to_close) {
+            ch->session = nullptr;  // Prevent ch->close() from calling close_channel() again
+            ch->close();
         }
         libssh2_session_disconnect(session, "Bye bye");
         libssh2_session_free(session);
@@ -335,6 +349,7 @@ void ohtoai::ssh::detail::ssh_session::disconnect() {
     if (sock != LIBSSH2_INVALID_SOCKET) {
         ::shutdown(sock, 2);
         ::close(sock);
+        sock = LIBSSH2_INVALID_SOCKET;
     }
 }
 
