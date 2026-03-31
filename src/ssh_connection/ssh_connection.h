@@ -73,7 +73,7 @@ namespace ohtoai::ssh
             std::string username;
             LIBSSH2_SESSION *session = nullptr;
             std::map<channel_id_t, ssh_channel_ptr> channels;
-            int sock = LIBSSH2_INVALID_SOCKET;
+            int sock = -1;
             inline static std::atomic_size_t counter = 0;
         };
 

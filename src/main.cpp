@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/fmt.h>
 #include <chrono>
+#include <cstring>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,10 @@ public:
     inline static std::mutex ssh_contexts_mutex;
 };
 
+// Poll interval when no SSH data is available.
+// 10ms gives good responsiveness without busy-looping.
+static constexpr int kSshPollIntervalMs = 10;
+
 int main(int argc, char *argv[]) {
     int port = 8080;
     std::string host = "0.0.0.0";
@@ -67,10 +72,6 @@ int main(int argc, char *argv[]) {
             return 0;
         }
     }
-
-    // Poll interval when no SSH data is available.
-    // 10ms gives good responsiveness without busy-looping.
-    constexpr int kSshPollIntervalMs = 10;
 
     hv::WebSocketService ws;
     ws.onopen = [](const WebSocketChannelPtr& channel, const HttpRequestPtr& req) {
@@ -274,7 +275,8 @@ int main(int argc, char *argv[]) {
 
     hv::WebSocketServer server;
     server.port = port;
-    server.host = host.c_str();
+    strncpy(server.host, host.c_str(), sizeof(server.host) - 1);
+    server.host[sizeof(server.host) - 1] = '\0';
 
     server.registerHttpService(&http);
     server.registerWebSocketService(&ws);
