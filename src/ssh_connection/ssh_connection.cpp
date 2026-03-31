@@ -100,6 +100,9 @@ void ohtoai::ssh::detail::ssh_channel::write(const byte* data, size_t size) {
             session->wait_socket();
             continue;
         }
+        if (rc == 0) {
+            throw std::runtime_error(fmt::format("[{}] Channel write returned 0 — channel may be closed", id));
+        }
         if (rc < 0) {
             char *error_msg = nullptr;
             libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
@@ -194,6 +197,7 @@ void ohtoai::ssh::detail::ssh_channel::close() {
 }
 
 ohtoai::ssh::detail::ssh_session::ssh_session() {
+    sock = LIBSSH2_INVALID_SOCKET;
     static std::once_flag libssh2_init_flag;
     std::call_once(libssh2_init_flag, []() {
         spdlog::debug("libssh2 init");

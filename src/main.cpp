@@ -102,7 +102,7 @@ int main(int argc, char *argv[]) {
         auto ctx = channel->newContextPtr<ssh_context>();
         {
             std::lock_guard<std::mutex> guard(ssh_context::ssh_contexts_mutex);
-            ssh_context::ssh_contexts.emplace(channel_id, ctx);
+            ssh_context::ssh_contexts.insert_or_assign(channel_id, ctx);
         }
         ctx->ssh_channel_id = channel_id;
         ctx->channels_read.emplace(channel);
@@ -218,6 +218,10 @@ int main(int argc, char *argv[]) {
             }
         }
         ctx->close();
+        {
+            std::lock_guard<std::mutex> guard(ssh_context::ssh_contexts_mutex);
+            ssh_context::ssh_contexts.erase(ctx->ssh_channel_id);
+        }
         channel->deleteContextPtr();
     };
 
@@ -263,7 +267,7 @@ int main(int argc, char *argv[]) {
             catch (const std::exception& e) {
                 spdlog::error("SSH connection failed: {}", e.what());
                 ctx->setStatus(HTTP_STATUS_FORBIDDEN);
-                return ctx->send(e.what());
+                return ctx->send("SSH connection failed");
             }
         }
 
