@@ -33,5 +33,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     $<$<BOOL:${HTTPLIB_IS_USING_OPENSSL}>:OpenSSL::Crypto>
     hv_static
     libssh2_static
-    atomic
-    spdlog $<$<BOOL:${MINGW}>:ws2_32>)
+    $<$<NOT:$<PLATFORM_ID:Windows>>:atomic>
+    spdlog
+    $<$<PLATFORM_ID:Windows>:ws2_32>)

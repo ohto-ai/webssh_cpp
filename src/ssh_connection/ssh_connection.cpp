@@ -1,16 +1,23 @@
 #include "ssh_connection.h"
 
+#include <algorithm>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <libssh2.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <unistd.h>
+#endif
 #include <stdexcept>
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/fmt.h>
-#include <unistd.h>
 
 struct DebugInfo {
     const char *file = nullptr;
@@ -197,6 +204,15 @@ void ohtoai::ssh::detail::ssh_channel::close() {
 }
 
 ohtoai::ssh::detail::ssh_session::ssh_session() {
+#ifdef _WIN32
+    static std::once_flag winsock_init_flag;
+    std::call_once(winsock_init_flag, []() {
+        WSADATA wsa_data;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
+            throw std::runtime_error("Failed to initialize WinSock");
+        }
+    });
+#endif
     sock = LIBSSH2_INVALID_SOCKET;
     static std::once_flag libssh2_init_flag;
     std::call_once(libssh2_init_flag, []() {
@@ -216,6 +232,9 @@ ohtoai::ssh::detail::ssh_session::~ssh_session() {
         // deinit sshlib
         spdlog::debug("libssh2 exit");
         libssh2_exit();
+#ifdef _WIN32
+        WSACleanup();
+#endif
     }
 }
 
@@ -351,8 +370,13 @@ void ohtoai::ssh::detail::ssh_session::disconnect() {
         spdlog::info("[{}] Session disconnected", get_id());
     }
     if (sock != LIBSSH2_INVALID_SOCKET) {
+#ifdef _WIN32
+        ::shutdown(sock, SD_BOTH);
+        ::closesocket(sock);
+#else
         ::shutdown(sock, 2);
         ::close(sock);
+#endif
         sock = LIBSSH2_INVALID_SOCKET;
     }
 }
