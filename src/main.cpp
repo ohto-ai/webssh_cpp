@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
                     // Attach as read-only observer to an existing session
                     std::lock_guard lock(*ctx);
                     ctx->channels_read.emplace(channel);
-                    channel->setContext(ctx);
+                    channel->setContextPtr(ctx);
                     spdlog::info("[{}] Attached read-only WebSocket to existing ssh_context", channel_id);
                     return;
                 }
