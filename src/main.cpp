@@ -23,6 +23,8 @@ public:
     std::set<WebSocketChannelPtr> channels_write;
     void close() {
         std::lock_guard lock(*this);
+        if (closed_) return;
+        closed_ = true;
         for (auto& channel : channels_read) {
             channel->close();
         }
@@ -40,6 +42,8 @@ public:
     }
     inline static std::map<ohtoai::ssh::channel_id_t, std::weak_ptr<ssh_context>> ssh_contexts;
     inline static std::mutex ssh_contexts_mutex;
+private:
+    bool closed_ = false;
 };
 
 // Poll interval when no SSH data is available.
@@ -93,6 +97,7 @@ int main(int argc, char *argv[]) {
                     // Attach as read-only observer to an existing session
                     std::lock_guard lock(*ctx);
                     ctx->channels_read.emplace(channel);
+                    channel->setContext(ctx);
                     spdlog::info("[{}] Attached read-only WebSocket to existing ssh_context", channel_id);
                     return;
                 }
@@ -248,9 +253,9 @@ int main(int argc, char *argv[]) {
             }
         }
         else {
-            if (hostname.empty() || username.empty()) {
+            if (hostname.empty() || username.empty() || password.empty()) {
                 ctx->setStatus(HTTP_STATUS_BAD_REQUEST);
-                return ctx->send("hostname and username are required");
+                return ctx->send("hostname, username and password are required");
             }
             try {
                 ssh_channel = ohtoai::ssh::ssh_pty_connection_manager::get_instance().get_channel(hostname, port, username, password);
