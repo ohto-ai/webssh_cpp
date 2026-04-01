@@ -263,9 +263,14 @@ int main(int argc, char *argv[]) {
                     ctx->setStatus(HTTP_STATUS_INTERNAL_SERVER_ERROR);
                     return ctx->send("failed to create ssh channel");
                 }
-                ssh_channel->set_env("LC_WSSH_WEBSOCKET_HOST", ctx->host());
-                ssh_channel->set_env("LC_WSSH_WEBSOCKET_URL", ctx->url());
-                ssh_channel->set_env("LC_WSSH_WEBSOCKET_CLIENT_IP", ctx->header("X-Real-IP", ctx->ip()));
+                try {
+                    ssh_channel->set_env("LC_WSSH_WEBSOCKET_HOST", ctx->host());
+                    ssh_channel->set_env("LC_WSSH_WEBSOCKET_URL", ctx->url());
+                    ssh_channel->set_env("LC_WSSH_WEBSOCKET_CLIENT_IP", ctx->header("X-Real-IP", ctx->ip()));
+                }
+                catch (const std::exception& e) {
+                    spdlog::warn("[{}] Failed to set env variables (server may not support channel-setenv): {}", ssh_channel->id, e.what());
+                }
                 ssh_channel->request_pty(term.empty() ? "xterm-256color" : term);
                 ssh_channel->shell();
             }
