@@ -473,25 +473,38 @@ size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_session_count() cons
 ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel(const std::string &host, int port, const std::string &username, const std::string &password) {
     auto session_id = detail::ssh_session::generate_id(host, port, username);
 
-    auto session_iter = [this, &session_id]{
+    ssh_session_ptr session;
+    {
         std::lock_guard<std::mutex> lock(sessions_mutex);
-        // find first session that has less than max_channel_in_session channels
-        auto begin = sessions.lower_bound(session_id);
-        auto end = sessions.upper_bound(session_id);
-        return std::find_if(begin, end, [this](const auto &pair) {
-            return pair.second->channels.size() < max_channel_in_session;
+        // Remove stale (disconnected) sessions for this session_id so they are
+        // never reused after a Ctrl+D / channel-close sequence.
+        auto range = sessions.equal_range(session_id);
+        for (auto it = range.first; it != range.second; ) {
+            if (it->second->session == nullptr) {
+                it = sessions.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        // Find the first live session with available channel capacity.
+        range = sessions.equal_range(session_id);
+        auto it = std::find_if(range.first, range.second, [this](const auto &pair) {
+            return max_channel_in_session == 0 ||
+                   pair.second->channels.size() < max_channel_in_session;
         });
-    }();
+        if (it != range.second) {
+            session = it->second;
+        }
+    }
 
-    // if no session found, create new session
-    if (session_iter == sessions.end()) {
-        auto session = std::make_shared<detail::ssh_session>();
+    // No usable session found – create a new one.
+    if (!session) {
+        session = std::make_shared<detail::ssh_session>();
         session->connect(host, port);
         session->authenticate(username, password);
         std::lock_guard<std::mutex> lock(sessions_mutex);
-        session_iter = sessions.emplace(session_id, session);
+        sessions.emplace(session_id, session);
     }
-    auto session = session_iter->second;
     auto channel = session->open_channel();
     channels.emplace(channel->id, channel);
     return channel;
