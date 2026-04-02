@@ -14,10 +14,26 @@ set(PROJECT_HOMEPAGE "https://github.com/Ohto-Ai/CMakeProjectTemplate/")
 string(TOUPPER ${PROJECT_NAME} PROJECT_NAME_VAR)
 string(REPLACE "-" "_" PROJECT_NAME_VAR ${PROJECT_NAME_VAR})
 
-# Add source files
+# Build ssh_connection as a static library so tests can link against it
+add_library(webssh_cpp_ssh_lib STATIC
+    ssh_connection/ssh_connection.cpp
+)
+target_include_directories(webssh_cpp_ssh_lib PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${PROJECT_BINARY_DIR}/generated/inc)
+target_link_libraries(webssh_cpp_ssh_lib PUBLIC
+    Threads::Threads
+    $<$<BOOL:${HTTPLIB_IS_USING_OPENSSL}>:OpenSSL::SSL>
+    $<$<BOOL:${HTTPLIB_IS_USING_OPENSSL}>:OpenSSL::Crypto>
+    libssh2_static
+    $<$<NOT:$<PLATFORM_ID:Windows>>:atomic>
+    spdlog
+    $<$<PLATFORM_ID:Windows>:ws2_32>)
+
+# Add source files for the main executable
 set(SOURCES
     main.cpp
-    ssh_connection/ssh_connection.cpp
 )
 
 # Build the executable
@@ -28,11 +44,5 @@ target_include_directories(${PROJECT_NAME} PRIVATE inc)
 target_include_directories(${PROJECT_NAME} PRIVATE ${PROJECT_BINARY_DIR}/generated/inc)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    Threads::Threads
-    $<$<BOOL:${HTTPLIB_IS_USING_OPENSSL}>:OpenSSL::SSL>
-    $<$<BOOL:${HTTPLIB_IS_USING_OPENSSL}>:OpenSSL::Crypto>
-    hv_static
-    libssh2_static
-    $<$<NOT:$<PLATFORM_ID:Windows>>:atomic>
-    spdlog
-    $<$<PLATFORM_ID:Windows>:ws2_32>)
+    webssh_cpp_ssh_lib
+    hv_static)

@@ -1,9 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
-project(test)
+project(webssh_cpp_test)
 
-enable_testing()
-
-add_custom_target(${PROJECT_NAME} ALL)
+add_custom_target(webssh_cpp_tests ALL)
 
 # Add test files
 file(GLOB test_files "*.test.cpp")
@@ -15,7 +13,7 @@ foreach (test_file ${test_files})
     target_include_directories(${test_name} PRIVATE ${CMAKE_BINARY_DIR}/src/generated/inc)
     target_link_libraries(${test_name} PRIVATE
         Catch2 Catch2WithMain
-        Threads::Threads
+        webssh_cpp_ssh_lib
         $<$<BOOL:${HTTPLIB_IS_USING_OPENSSL}>:OpenSSL::SSL>
         $<$<BOOL:${HTTPLIB_IS_USING_OPENSSL}>:OpenSSL::Crypto>
         spdlog $<$<BOOL:${MINGW}>:ws2_32>)
@@ -23,7 +21,7 @@ foreach (test_file ${test_files})
         PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
     add_test(NAME ${test_name} COMMAND ${test_name})
-    add_dependencies(${PROJECT_NAME} ${test_name})
+    add_dependencies(webssh_cpp_tests ${test_name})
     list(APPEND test_list ${test_name})
 endforeach ()
 

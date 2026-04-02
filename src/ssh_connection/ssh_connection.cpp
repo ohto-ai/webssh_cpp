@@ -517,3 +517,15 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_man
     }
     return iter->second.lock();
 }
+
+void ohtoai::ssh::detail::ssh_pty_connection_manager::close_channel(const detail::channel_id_t &id) {
+    auto iter = channels.find(id);
+    if (iter == channels.end()) {
+        return;
+    }
+    auto ch = iter->second.lock();
+    channels.erase(iter);
+    if (ch) {
+        ch->close();
+    }
+}
