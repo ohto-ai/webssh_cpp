@@ -489,7 +489,8 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_man
         // Find the first live session with available channel capacity.
         range = sessions.equal_range(session_id);
         auto it = std::find_if(range.first, range.second, [this](const auto &pair) {
-            return pair.second->channels.size() < max_channel_in_session;
+            return max_channel_in_session == 0 ||
+                   pair.second->channels.size() < max_channel_in_session;
         });
         if (it != range.second) {
             session = it->second;
