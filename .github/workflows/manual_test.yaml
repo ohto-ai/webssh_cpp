@@ -3,6 +3,11 @@ name: Manual Test
 on:
   workflow_dispatch:
     inputs:
+      password:
+        type: string
+        description: 'Password for the test SSH account (webssh_tester). Leave blank to auto-generate a random password.'
+        required: false
+        default: ''
       duration:
         type: string
         description: 'How long to keep the test environment running, in minutes (max 60)'
@@ -27,15 +32,21 @@ jobs:
     - name: Set up SSH server and test account
       id: setup
       shell: bash
+      env:
+        TEST_PASS_INPUT: ${{ inputs.password }}
       run: |
         sudo apt-get update
         sudo apt-get install -y openssh-server
         # Enable password authentication
         sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
         sudo systemctl start ssh
-        # Generate a random test user and password
+        # Use the provided password or auto-generate one
         TEST_USER=webssh_tester
-        TEST_PASS=$(openssl rand -hex 10)
+        if [ -n "$TEST_PASS_INPUT" ]; then
+          TEST_PASS="$TEST_PASS_INPUT"
+        else
+          TEST_PASS=$(openssl rand -hex 10)
+        fi
         sudo useradd -m -s /bin/bash "$TEST_USER"
         echo "$TEST_USER:$TEST_PASS" | sudo chpasswd
         echo "test_user=$TEST_USER" >> "$GITHUB_OUTPUT"
