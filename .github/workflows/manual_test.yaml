@@ -1,0 +1,106 @@
+name: Manual Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        type: string
+        description: 'How long to keep the test environment running (minutes)'
+        required: false
+        default: '30'
+
+jobs:
+  manual-test:
+    name: Manual Test Environment
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        submodules: 'true'
+        fetch-depth: 0
+
+    - name: Set up SSH server and test account
+      id: setup
+      shell: bash
+      run: |
+        sudo apt-get install -y openssh-server
+        # Enable password authentication
+        sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo systemctl start ssh
+        # Generate a random test user and password
+        TEST_USER=webssh_tester
+        TEST_PASS=$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 20)
+        sudo useradd -m -s /bin/bash "$TEST_USER"
+        echo "$TEST_USER:$TEST_PASS" | sudo chpasswd
+        echo "test_user=$TEST_USER" >> "$GITHUB_OUTPUT"
+        echo "test_pass=$TEST_PASS" >> "$GITHUB_OUTPUT"
+
+    - name: Configure and build
+      shell: bash
+      run: |
+        cmake -Bbuild -DCMAKE_BUILD_TYPE=Release
+        cmake --build build --target webssh_cpp -j4
+
+    - name: Start webssh_cpp
+      shell: bash
+      run: |
+        ./build/src/webssh_cpp -p 8080 &
+        echo "APP_PID=$!" >> "$GITHUB_ENV"
+        sleep 2
+        echo "webssh_cpp started on port 8080"
+
+    - name: Set up public tunnel
+      shell: bash
+      run: |
+        # Start a reverse SSH tunnel via localhost.run (no account required)
+        ssh -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            -R 80:localhost:8080 \
+            nokey@localhost.run 2>&1 | tee /tmp/tunnel.log &
+        echo "TUNNEL_PID=$!" >> "$GITHUB_ENV"
+        # Wait for the tunnel URL to appear in the log
+        for i in $(seq 1 15); do
+          TUNNEL_URL=$(grep -oP 'https?://[^\s]+' /tmp/tunnel.log | head -1)
+          if [ -n "$TUNNEL_URL" ]; then
+            break
+          fi
+          sleep 2
+        done
+        echo "TUNNEL_URL=${TUNNEL_URL:-http://localhost:8080 (tunnel unavailable)}" >> "$GITHUB_ENV"
+
+    - name: Print test environment info
+      shell: bash
+      run: |
+        echo "============================================"
+        echo "  WebSSH Manual Test Environment"
+        echo "============================================"
+        echo ""
+        echo "  1. Open the web interface in your browser:"
+        echo "     $TUNNEL_URL"
+        echo ""
+        echo "  2. In the web terminal, connect with these SSH credentials:"
+        echo "     Host     : 127.0.0.1"
+        echo "     Port     : 22"
+        echo "     Username : ${{ steps.setup.outputs.test_user }}"
+        echo "     Password : ${{ steps.setup.outputs.test_pass }}"
+        echo ""
+        echo "  Environment will stay up for ${{ inputs.duration }} minutes."
+        echo "  Cancel this workflow run to shut it down early."
+        echo "============================================"
+
+    - name: Wait for manual testing
+      shell: bash
+      run: |
+        DURATION_INPUT="${{ inputs.duration }}"
+        # Validate that the input is a positive integer; fall back to 30 if not.
+        if ! [[ "$DURATION_INPUT" =~ ^[0-9]+$ ]] || [ "$DURATION_INPUT" -le 0 ]; then
+          DURATION_INPUT=30
+        fi
+        DURATION_SECONDS=$(( DURATION_INPUT * 60 ))
+        echo "Keeping environment alive for ${DURATION_INPUT} minute(s)..."
+        sleep "$DURATION_SECONDS"

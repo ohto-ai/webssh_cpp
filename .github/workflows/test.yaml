@@ -1,0 +1,75 @@
+name: Test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/test.yaml'
+      - 'src/**'
+      - 'inc/**'
+      - 'test/**'
+      - 'CMakeLists.txt'
+      - '*.cmake'
+  pull_request:
+    paths:
+      - '.github/workflows/test.yaml'
+      - 'src/**'
+      - 'inc/**'
+      - 'test/**'
+      - 'CMakeLists.txt'
+      - '*.cmake'
+
+jobs:
+  test:
+    name: ${{ matrix.os }} - test
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-latest]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        submodules: 'true'
+        fetch-depth: 0
+
+    - name: Set up SSH server for integration tests
+      shell: bash
+      run: |
+        sudo apt-get install -y openssh-server
+        # Enable password authentication
+        sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo systemctl start ssh
+        # Create a temporary test user with a random password
+        TEST_USER=webssh_testuser
+        TEST_PASS=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9' | head -c 16)
+        sudo useradd -m -s /bin/bash "$TEST_USER"
+        echo "$TEST_USER:$TEST_PASS" | sudo chpasswd
+        # Export credentials for subsequent steps
+        echo "TEST_SSH_HOST=127.0.0.1" >> "$GITHUB_ENV"
+        echo "TEST_SSH_PORT=22" >> "$GITHUB_ENV"
+        echo "TEST_SSH_USER=$TEST_USER" >> "$GITHUB_ENV"
+        echo "TEST_SSH_PASS=$TEST_PASS" >> "$GITHUB_ENV"
+
+    - name: Set reusable strings
+      id: strings
+      shell: bash
+      run: |
+        echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
+
+    - name: Configure
+      shell: bash
+      run: |
+        cmake -B${{ steps.strings.outputs.build-output-dir }} -DCMAKE_BUILD_TYPE=Debug
+
+    - name: Build tests
+      shell: bash
+      run: |
+        cmake --build ${{ steps.strings.outputs.build-output-dir }} --target webssh_cpp_tests -j4
+
+    - name: Run tests
+      shell: bash
+      run: |
+        ctest --test-dir ${{ steps.strings.outputs.build-output-dir }} --output-on-failure
