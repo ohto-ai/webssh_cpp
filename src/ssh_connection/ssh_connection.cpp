@@ -14,46 +14,16 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
 #endif
 #include <stdexcept>
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/fmt.h>
 
-struct DebugInfo {
-    const char *file = nullptr;
-    const char *func_name = nullptr;
-    int line = 0;
-};
-
-// Internal implementation for functions with non-void return type
-template <typename Result, typename Func, typename... Args>
-auto wrapSSHFunctionImpl(const DebugInfo &dbg_info, LIBSSH2_SESSION* session, Func func, Args&&... args) -> decltype(func(std::forward<Args>(args)...)){
-    if constexpr (std::is_same_v<Result, void>) {
-        return func(std::forward<Args>(args)...);
-    }
-    else {
-        Result rc {};
-        while (true) {
-            rc = func(std::forward<Args>(args)...);
-            if (rc > 0) {
-                return rc;
-            }
-            else if (rc != LIBSSH2_ERROR_EAGAIN) {
-                char *error_msg = nullptr;
-                libssh2_session_last_error(session, &error_msg, nullptr, 0);
-                throw std::runtime_error(fmt::format("{}:{} ({}) {}", dbg_info.file, dbg_info.line, rc, error_msg));
-            }
-        }
-        return rc;
-    }
-}
-
-#define WRAP_SSH_FUNCTION(session, func, ...) wrapSSHFunctionImpl<decltype(func(__VA_ARGS__)), decltype(func), decltype(__VA_ARGS__)>({__FILE__, __func__, __LINE__}, session, func, __VA_ARGS__)
-
 ohtoai::ssh::detail::ssh_channel::ssh_channel():
-    id(std::to_string(reinterpret_cast<uintptr_t>(this))) {
+    id(std::to_string(++id_counter)) {
     channel = nullptr;
-    session = nullptr;
 }
 
 ohtoai::ssh::detail::ssh_channel::~ssh_channel() {
@@ -62,18 +32,22 @@ ohtoai::ssh::detail::ssh_channel::~ssh_channel() {
 }
 
 void ohtoai::ssh::detail::ssh_channel::reserve_buffer(size_t size) {
+    std::lock_guard lock(mutex_);
     buffer.reserve(size);
 }
 
 const ohtoai::mini_buffer& ohtoai::ssh::detail::ssh_channel::get_buffer() {
+    std::lock_guard lock(mutex_);
     return buffer;
 }
 
 bool ohtoai::ssh::detail::ssh_channel::is_open() {
+    std::lock_guard lock(mutex_);
     return channel != nullptr && libssh2_channel_eof(channel) == 0;
 }
 
 long ohtoai::ssh::detail::ssh_channel::read() {
+    std::lock_guard lock(mutex_);
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
@@ -90,21 +64,28 @@ long ohtoai::ssh::detail::ssh_channel::read() {
     }
     buffer.resize(rc);
 
-    if (rc >0) {
+    if (rc > 0) {
         spdlog::debug("[{}] Read {} bytes", id, rc);
     }
     return rc;
 }
 
 void ohtoai::ssh::detail::ssh_channel::write(const byte* data, size_t size) {
+    std::unique_lock lock(mutex_);
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
+    auto sess = session;  // keep session alive via shared_ptr during the loop
     size_t total_written = 0;
     while (total_written < size) {
         ssize_t rc = libssh2_channel_write(channel, data + total_written, size - total_written);
         if (rc == LIBSSH2_ERROR_EAGAIN) {
-            session->wait_socket();
+            lock.unlock();
+            sess->wait_socket();
+            lock.lock();
+            if (channel == nullptr) {
+                throw std::runtime_error(fmt::format("[{}] Channel closed during write", id));
+            }
             continue;
         }
         if (rc == 0) {
@@ -112,7 +93,7 @@ void ohtoai::ssh::detail::ssh_channel::write(const byte* data, size_t size) {
         }
         if (rc < 0) {
             char *error_msg = nullptr;
-            libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
+            libssh2_session_last_error(sess->session, &error_msg, nullptr, 0);
             throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
         }
         total_written += static_cast<size_t>(rc);
@@ -125,81 +106,114 @@ void ohtoai::ssh::detail::ssh_channel::write(const std::string &data) {
 }
 
 void ohtoai::ssh::detail::ssh_channel::set_env(const std::string &name, const std::string &value) {
+    std::unique_lock lock(mutex_);
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
+    auto sess = session;
     while (int rc = libssh2_channel_setenv(channel, name.c_str(), value.c_str())) {
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
-            libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
+            libssh2_session_last_error(sess->session, &error_msg, nullptr, 0);
             throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
         }
-        session->wait_socket();
+        lock.unlock();
+        sess->wait_socket();
+        lock.lock();
+        if (channel == nullptr) {
+            throw std::runtime_error(fmt::format("[{}] Channel closed during set_env", id));
+        }
     }
     spdlog::debug("[{}] Env set {}={}", id, name, value);
 }
 
 void ohtoai::ssh::detail::ssh_channel::shell() {
+    std::unique_lock lock(mutex_);
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
+    auto sess = session;
     while (int rc = libssh2_channel_shell(channel)) {
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
-            libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
+            libssh2_session_last_error(sess->session, &error_msg, nullptr, 0);
             throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
         }
-        session->wait_socket();
+        lock.unlock();
+        sess->wait_socket();
+        lock.lock();
+        if (channel == nullptr) {
+            throw std::runtime_error(fmt::format("[{}] Channel closed during shell", id));
+        }
     }
     spdlog::debug("[{}] Shell requested", id);
 }
 
 void ohtoai::ssh::detail::ssh_channel::request_pty(const std::string &pty_type) {
+    std::unique_lock lock(mutex_);
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
-
+    auto sess = session;
     while (int rc = libssh2_channel_request_pty(channel, pty_type.c_str())) {
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
-            libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
+            libssh2_session_last_error(sess->session, &error_msg, nullptr, 0);
             throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
         }
-        session->wait_socket();
+        lock.unlock();
+        sess->wait_socket();
+        lock.lock();
+        if (channel == nullptr) {
+            throw std::runtime_error(fmt::format("[{}] Channel closed during request_pty", id));
+        }
     }
     spdlog::debug("[{}] Pty requested {}", id, pty_type);
 }
 
 void ohtoai::ssh::detail::ssh_channel::resize_pty(int width, int height) {
+    std::unique_lock lock(mutex_);
     if (channel == nullptr) {
         throw std::runtime_error(fmt::format("[{}] Channel is not opened", id));
     }
+    auto sess = session;
     spdlog::debug("[{}] Pty resized {}x{}", id, width, height);
     while (int rc = libssh2_channel_request_pty_size(channel, width, height)) {
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             char *error_msg = nullptr;
-            libssh2_session_last_error(session->session, &error_msg, nullptr, 0);
+            libssh2_session_last_error(sess->session, &error_msg, nullptr, 0);
             throw std::runtime_error(fmt::format("[{}]({}) <{}> {}", id, __LINE__, rc, error_msg));
         }
-        session->wait_socket();
+        lock.unlock();
+        sess->wait_socket();
+        lock.lock();
+        if (channel == nullptr) {
+            throw std::runtime_error(fmt::format("[{}] Channel closed during resize_pty", id));
+        }
     }
 }
 
 void ohtoai::ssh::detail::ssh_channel::send_eof() {
+    std::lock_guard lock(mutex_);
     if (channel != nullptr) {
         libssh2_channel_send_eof(channel);
     }
 }
 
 void ohtoai::ssh::detail::ssh_channel::close() {
-    if (channel != nullptr) {
-        libssh2_channel_free(channel);
-        channel = nullptr;
-        if (session != nullptr) {
-            auto* sess = session;
-            session = nullptr;
-            sess->close_channel(id);
+    ssh_session_ptr sess_to_notify;
+    {
+        std::lock_guard lock(mutex_);
+        if (channel != nullptr) {
+            libssh2_channel_free(channel);
+            channel = nullptr;
+            sess_to_notify = std::move(session);
+            // session shared_ptr is now null in this channel
         }
+    }
+    // Notify session outside the lock to avoid deadlock
+    if (sess_to_notify) {
+        sess_to_notify->close_channel(id);
     }
 }
 
@@ -227,9 +241,7 @@ ohtoai::ssh::detail::ssh_session::ssh_session() {
 
 ohtoai::ssh::detail::ssh_session::~ssh_session() {
     disconnect();
-    --counter;
-    if (counter == 0) {
-        // deinit sshlib
+    if (counter.fetch_sub(1) == 1) {
         spdlog::debug("libssh2 exit");
         libssh2_exit();
 #ifdef _WIN32
@@ -259,7 +271,6 @@ void ohtoai::ssh::detail::ssh_session::connect(const std::string &host, int port
     if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0) {
         throw std::runtime_error("Failed to resolve host");
     }
-    // log host and its ip
     spdlog::debug("Host resolved {}", host);
 
     struct sockaddr_in sin {};
@@ -313,8 +324,8 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_session::open_chan
     if (session == nullptr) {
         throw std::runtime_error("Session is not opened");
     }
-    ssh_channel_ptr channel = std::make_shared<ssh_channel>();
-    channel->session = this;
+    auto channel = std::make_shared<ssh_channel>();
+    channel->session = shared_from_this();
     do {
         channel->channel = libssh2_channel_open_session(session);
         if (channel->channel) {
@@ -356,12 +367,10 @@ void ohtoai::ssh::detail::ssh_session::close_channel(const channel_id_t &id) {
 
 void ohtoai::ssh::detail::ssh_session::disconnect() {
     if (session != nullptr) {
-        // Move channels out to avoid modification-during-iteration and
-        // prevent recursive disconnect() calls triggered by close_channel().
         auto channels_to_close = std::move(channels);
         channels.clear();
         for (auto &[cid, ch] : channels_to_close) {
-            ch->session = nullptr;  // Prevent ch->close() from calling close_channel() again
+            ch->session.reset();  // Prevent ch->close() from calling close_channel()
             ch->close();
         }
         libssh2_session_disconnect(session, "Bye bye");
@@ -382,8 +391,10 @@ void ohtoai::ssh::detail::ssh_session::disconnect() {
 }
 
 void ohtoai::ssh::detail::ssh_session::wait_socket() {
+    if (session == nullptr) {
+        throw std::runtime_error("Session is closed");
+    }
     struct timeval timeout;
-    int rc;
     fd_set fd;
     fd_set *writefd = nullptr;
     fd_set *readfd = nullptr;
@@ -396,7 +407,6 @@ void ohtoai::ssh::detail::ssh_session::wait_socket() {
 
     FD_SET(sock, &fd);
 
-    /* now make sure we wait in the correct direction */
     dir = libssh2_session_block_directions(session);
 
     if(dir & LIBSSH2_SESSION_BLOCK_INBOUND)
@@ -405,7 +415,19 @@ void ohtoai::ssh::detail::ssh_session::wait_socket() {
     if(dir & LIBSSH2_SESSION_BLOCK_OUTBOUND)
         writefd = &fd;
 
-    rc = select((int)(sock + 1), readfd, writefd, nullptr, &timeout);
+#ifdef _WIN32
+    int rc = select(0, readfd, writefd, nullptr, &timeout);
+#else
+    int rc = select(sock + 1, readfd, writefd, nullptr, &timeout);
+#endif
+    if (rc < 0) {
+#ifdef _WIN32
+        throw std::runtime_error(fmt::format("select() failed: {}", WSAGetLastError()));
+#else
+        throw std::runtime_error(fmt::format("select() failed: {}", strerror(errno)));
+#endif
+    }
+    // timeout (rc == 0) is acceptable; caller will retry
 }
 
 ohtoai::ssh::detail::session_id_t ohtoai::ssh::detail::ssh_session::generate_id(const std::string &host, int port, const std::string &username, const std::string &custom) {
@@ -446,7 +468,7 @@ size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_max_channel_in_sessi
 }
 
 size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel_count(detail::session_id_t session_id) const {
-    std::lock_guard<std::mutex> lock(sessions_mutex);
+    std::shared_lock lock(sessions_mutex);
     auto begin = sessions.lower_bound(session_id);
     auto end = sessions.upper_bound(session_id);
     size_t count = 0;
@@ -457,17 +479,31 @@ size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel_count(detail
 }
 
 size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel_count() const {
+    std::shared_lock lock(channels_mutex);
     return channels.size();
 }
 
 size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel_alive_count() const {
+    std::shared_lock lock(channels_mutex);
     return std::count_if(channels.begin(), channels.end(), [](const auto &pair) {
         return !pair.second.expired();
     });
 }
 
 size_t ohtoai::ssh::detail::ssh_pty_connection_manager::get_session_count() const {
+    std::shared_lock lock(sessions_mutex);
     return sessions.size();
+}
+
+void ohtoai::ssh::detail::ssh_pty_connection_manager::cleanup_stale_weak_ptrs() {
+    std::unique_lock lock(channels_mutex);
+    for (auto it = channels.begin(); it != channels.end(); ) {
+        if (it->second.expired()) {
+            it = channels.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel(const std::string &host, int port, const std::string &username, const std::string &password) {
@@ -475,9 +511,8 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_man
 
     ssh_session_ptr session;
     {
-        std::lock_guard<std::mutex> lock(sessions_mutex);
-        // Remove stale (disconnected) sessions for this session_id so they are
-        // never reused after a Ctrl+D / channel-close sequence.
+        std::unique_lock lock(sessions_mutex);
+        // Remove stale (disconnected) sessions for this session_id
         auto range = sessions.equal_range(session_id);
         for (auto it = range.first; it != range.second; ) {
             if (it->second->session == nullptr) {
@@ -486,7 +521,7 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_man
                 ++it;
             }
         }
-        // Find the first live session with available channel capacity.
+        // Find the first live session with available channel capacity
         range = sessions.equal_range(session_id);
         auto it = std::find_if(range.first, range.second, [this](const auto &pair) {
             return max_channel_in_session == 0 ||
@@ -497,20 +532,44 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_man
         }
     }
 
-    // No usable session found – create a new one.
+    // No usable session found - create a new one
     if (!session) {
         session = std::make_shared<detail::ssh_session>();
         session->connect(host, port);
         session->authenticate(username, password);
-        std::lock_guard<std::mutex> lock(sessions_mutex);
+        std::unique_lock lock(sessions_mutex);
         sessions.emplace(session_id, session);
     }
-    auto channel = session->open_channel();
-    channels.emplace(channel->id, channel);
+
+    ssh_channel_ptr channel;
+    try {
+        channel = session->open_channel();
+    }
+    catch (...) {
+        // If channel creation fails, clean up the stale session if it's now empty
+        std::unique_lock lock(sessions_mutex);
+        if (session->channels.empty() && session->session == nullptr) {
+            // Session was already disconnected; remove it
+            auto range = sessions.equal_range(session_id);
+            for (auto it = range.first; it != range.second; ++it) {
+                if (it->second == session) {
+                    sessions.erase(it);
+                    break;
+                }
+            }
+        }
+        throw;
+    }
+
+    {
+        std::unique_lock lock(channels_mutex);
+        channels.emplace(channel->id, channel);
+    }
     return channel;
 }
 
 ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_manager::get_channel(const detail::session_id_t &id) {
+    std::shared_lock lock(channels_mutex);
     auto iter = channels.find(id);
     if (iter == channels.end()) {
         return nullptr;
@@ -519,12 +578,16 @@ ohtoai::ssh::detail::ssh_channel_ptr ohtoai::ssh::detail::ssh_pty_connection_man
 }
 
 void ohtoai::ssh::detail::ssh_pty_connection_manager::close_channel(const detail::channel_id_t &id) {
-    auto iter = channels.find(id);
-    if (iter == channels.end()) {
-        return;
+    ssh_channel_ptr ch;
+    {
+        std::unique_lock lock(channels_mutex);
+        auto iter = channels.find(id);
+        if (iter == channels.end()) {
+            return;
+        }
+        ch = iter->second.lock();
+        channels.erase(iter);
     }
-    auto ch = iter->second.lock();
-    channels.erase(iter);
     if (ch) {
         ch->close();
     }

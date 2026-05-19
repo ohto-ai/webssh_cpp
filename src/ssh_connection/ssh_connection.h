@@ -7,6 +7,7 @@
 #include <map>
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
 
 typedef struct _LIBSSH2_SESSION                     LIBSSH2_SESSION;
 typedef struct _LIBSSH2_CHANNEL                     LIBSSH2_CHANNEL;
@@ -47,12 +48,14 @@ namespace ohtoai::ssh
             const channel_id_t id;
         protected:
             LIBSSH2_CHANNEL *channel = nullptr;
-            ssh_session *session = nullptr;
+            ssh_session_ptr session;
             ohtoai::mini_buffer buffer {4096};
+            mutable std::mutex mutex_;
+            inline static std::atomic<uint64_t> id_counter = 0;
         };
 
 
-        class ssh_session {
+        class ssh_session : public std::enable_shared_from_this<ssh_session> {
             friend class ssh_channel;
             friend class ssh_pty_connection_manager;
         public:
@@ -93,12 +96,14 @@ namespace ohtoai::ssh
             detail::ssh_channel_ptr get_channel(const std::string &host, int port, const std::string &username, const std::string &password);
             detail::ssh_channel_ptr get_channel(const detail::session_id_t &id);
             void close_channel(const detail::channel_id_t &id);
+            void cleanup_stale_weak_ptrs();
         protected:
             std::multimap<detail::session_id_t, detail::ssh_session_ptr> sessions;
             std::map<detail::channel_id_t, detail::ssh_channel_weak_ptr> channels;
             size_t max_channel_in_session = 3;
 
-            mutable std::mutex sessions_mutex;
+            mutable std::shared_mutex sessions_mutex;
+            mutable std::shared_mutex channels_mutex;
         protected:
             ssh_pty_connection_manager() = default;
             ssh_pty_connection_manager(const ssh_pty_connection_manager&) = delete;

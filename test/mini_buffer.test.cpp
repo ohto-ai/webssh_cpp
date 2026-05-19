@@ -146,14 +146,14 @@ TEST_CASE("mini_buffer move semantics", "[mini_buffer]") {
     }
 }
 
-TEST_CASE("mini_buffer implicit char* conversion", "[mini_buffer]") {
+TEST_CASE("mini_buffer ptr() accessors", "[mini_buffer]") {
     ohtoai::mini_buffer buf(64);
     buf.append("hello", 5);
 
-    char *ptr = buf;
+    char *ptr = buf.ptr();
     REQUIRE(ptr == buf.data);
 
     const ohtoai::mini_buffer &cbuf = buf;
-    const char *cptr = cbuf;
+    const char *cptr = cbuf.ptr();
     REQUIRE(cptr == cbuf.data);
 }

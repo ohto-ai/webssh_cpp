@@ -44,45 +44,45 @@ namespace ohtoai
                 delete[] data;
             }
 
-            operator char*(){
-                return data;
-            }
-            operator const char*() const{
-                return data;
-            }
+            char* ptr() { return data; }
+            const char* ptr() const { return data; }
 
-            void reserve(size_t capacity) {
-                if (capacity <= this->capacity) {
+            void reserve(size_t new_capacity) {
+                if (new_capacity <= this->capacity) {
                     return;
                 }
-                char *new_data = new char[capacity];
-                std::memcpy(new_data, data, size);
+                char *new_data = new char[new_capacity];
+                if (data && size > 0) {
+                    std::memcpy(new_data, data, size);
+                }
                 delete[] data;
                 data = new_data;
-                this->capacity = capacity;
+                this->capacity = new_capacity;
             }
 
-            void resize(size_t size) {
-                reserve(size);
-                this->size = size;
+            void resize(size_t new_size) {
+                reserve(new_size);
+                this->size = new_size;
             }
 
             void clear() {
                 size = 0;
             }
 
-            void append(const char *data, size_t size) {
-                reserve(this->size + size);
-                memcpy(this->data + this->size, data, size);
-                this->size += size;
+            void append(const char *src, size_t len) {
+                reserve(this->size + len);
+                std::memcpy(this->data + this->size, src, len);
+                this->size += len;
             }
 
-            void append(const std::string &data) {
-                append(data.data(), data.size());
+            void append(const std::string &str) {
+                append(str.data(), str.size());
             }
 
-            void append(const mini_buffer &buffer) {
-                append(buffer.data, buffer.size);
+            void append(const mini_buffer &other) {
+                if (this != &other) {
+                    append(other.data, other.size);
+                }
             }
         };
     }

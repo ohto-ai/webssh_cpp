@@ -16,32 +16,46 @@
 #include <hv/EventLoop.h>
 #include <hv/hasync.h>
 
-class ssh_context : public std::mutex {
+class ssh_context {
 public:
     ohtoai::ssh::channel_id_t ssh_channel_id;
     std::set<WebSocketChannelPtr> channels_read;
     std::set<WebSocketChannelPtr> channels_write;
+
     void close() {
-        std::lock_guard lock(*this);
-        if (closed_) return;
-        closed_ = true;
-        for (auto& channel : channels_read) {
-            channel->close();
+        // Collect resources under lock, then release them outside
+        // to prevent deadlock with the async read loop.
+        std::vector<WebSocketChannelPtr> ws_read_copy;
+        std::vector<WebSocketChannelPtr> ws_write_copy;
+        ohtoai::ssh::ssh_channel_ptr ssh_ch_to_close;
+        {
+            std::lock_guard lock(mutex_);
+            if (closed_) return;
+            closed_ = true;
+            ws_read_copy.assign(channels_read.begin(), channels_read.end());
+            ws_write_copy.assign(channels_write.begin(), channels_write.end());
+            channels_read.clear();
+            channels_write.clear();
+            ssh_ch_to_close = ohtoai::ssh::ssh_pty_connection_manager::get_instance()
+                .get_channel(ssh_channel_id);
         }
-        for (auto& channel : channels_write) {
-            channel->close();
-        }
-        auto ssh_channel = ohtoai::ssh::ssh_pty_connection_manager::get_instance().get_channel(ssh_channel_id);
-        if (ssh_channel != nullptr) {
-            ssh_channel->send_eof();
-            ssh_channel->close();
+        // Close WebSocket and SSH channels outside the lock
+        for (auto& ch : ws_read_copy) ch->close();
+        for (auto& ch : ws_write_copy) ch->close();
+        if (ssh_ch_to_close) {
+            ssh_ch_to_close->send_eof();
+            ssh_ch_to_close->close();
         }
     }
+
     ~ssh_context() {
         close();
     }
+
     inline static std::map<ohtoai::ssh::channel_id_t, std::weak_ptr<ssh_context>> ssh_contexts;
     inline static std::mutex ssh_contexts_mutex;
+
+    std::mutex mutex_;
 private:
     bool closed_ = false;
 };
@@ -61,7 +75,7 @@ int main(int argc, char *argv[]) {
             try {
                 port = std::stoi(argv[++i]);
                 if (port <= 0 || port > 65535) throw std::out_of_range("port out of range");
-            } catch (const std::exception& e) {
+            } catch (const std::exception&) {
                 fmt::print(stderr, "Invalid port: {}\n", argv[i]);
                 return 1;
             }
@@ -95,7 +109,7 @@ int main(int argc, char *argv[]) {
                 auto ctx = it->second.lock();
                 if (ctx != nullptr) {
                     // Attach as read-only observer to an existing session
-                    std::lock_guard lock(*ctx);
+                    std::lock_guard<std::mutex> ctx_lock(ctx->mutex_);
                     ctx->channels_read.emplace(channel);
                     channel->setContextPtr(ctx);
                     spdlog::info("[{}] Attached read-only WebSocket to existing ssh_context", channel_id);
@@ -129,7 +143,7 @@ int main(int argc, char *argv[]) {
                 }
 
                 {
-                    std::lock_guard lock(*ctx);
+                    std::lock_guard<std::mutex> lock(ctx->mutex_);
                     if (ctx->channels_write.empty()) {
                         spdlog::info("[{}] All write channels gone, stopping read loop", ctx->ssh_channel_id);
                         break;
@@ -150,7 +164,7 @@ int main(int argc, char *argv[]) {
                     continue;
                 }
 
-                std::lock_guard lock(*ctx);
+                std::lock_guard<std::mutex> lock(ctx->mutex_);
                 std::vector<WebSocketChannelPtr> to_remove;
                 for (auto& ws_channel : ctx->channels_read) {
                     if (!ws_channel->isConnected()) {
@@ -177,7 +191,7 @@ int main(int argc, char *argv[]) {
 
         // Read-only channels must not send data
         {
-            std::lock_guard lock(*ctx);
+            std::lock_guard<std::mutex> lock(ctx->mutex_);
             if (ctx->channels_write.find(channel) == ctx->channels_write.end()) {
                 spdlog::debug("[{}] Ignoring message from read-only channel", ctx->ssh_channel_id);
                 return;
@@ -212,8 +226,9 @@ int main(int argc, char *argv[]) {
         if (ctx == nullptr) {
             return;
         }
+        bool should_close = false;
         {
-            std::lock_guard lock(*ctx);
+            std::lock_guard<std::mutex> lock(ctx->mutex_);
             ctx->channels_read.erase(channel);
             ctx->channels_write.erase(channel);
             if (!ctx->channels_write.empty()) {
@@ -221,11 +236,15 @@ int main(int argc, char *argv[]) {
                 channel->deleteContextPtr();
                 return;
             }
+            should_close = true;
         }
-        ctx->close();
-        {
-            std::lock_guard<std::mutex> guard(ssh_context::ssh_contexts_mutex);
-            ssh_context::ssh_contexts.erase(ctx->ssh_channel_id);
+        // Close SSH session outside the lock to prevent deadlock
+        if (should_close) {
+            ctx->close();
+            {
+                std::lock_guard<std::mutex> guard(ssh_context::ssh_contexts_mutex);
+                ssh_context::ssh_contexts.erase(ctx->ssh_channel_id);
+            }
         }
         channel->deleteContextPtr();
     };
@@ -276,6 +295,8 @@ int main(int argc, char *argv[]) {
             }
             catch (const std::exception& e) {
                 spdlog::error("SSH connection failed: {}", e.what());
+                // Clean up stale weak_ptr entries on failure
+                ohtoai::ssh::ssh_pty_connection_manager::get_instance().cleanup_stale_weak_ptrs();
                 ctx->setStatus(HTTP_STATUS_FORBIDDEN);
                 return ctx->send("SSH connection failed");
             }

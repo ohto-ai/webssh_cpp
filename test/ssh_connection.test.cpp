@@ -51,6 +51,15 @@ SshConfig get_ssh_config() {
 
 using namespace ohtoai::ssh;
 
+// Helper: create a connected, authenticated session via shared_ptr
+// (required because open_channel() uses shared_from_this()).
+std::shared_ptr<ssh_session> make_test_session(const SshConfig& cfg) {
+    auto session = std::make_shared<ssh_session>();
+    session->connect(cfg.host, cfg.port);
+    session->authenticate(cfg.username, cfg.password);
+    return session;
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Connection and authentication tests
 // ──────────────────────────────────────────────────────────────────────────────
@@ -61,10 +70,10 @@ TEST_CASE("SSH session connects and authenticates successfully", "[ssh_integrati
         return;
     }
 
-    ssh_session session;
-    REQUIRE_NOTHROW(session.connect(cfg.host, cfg.port));
-    REQUIRE_NOTHROW(session.authenticate(cfg.username, cfg.password));
-    REQUIRE_NOTHROW(session.disconnect());
+    auto session = std::make_shared<ssh_session>();
+    REQUIRE_NOTHROW(session->connect(cfg.host, cfg.port));
+    REQUIRE_NOTHROW(session->authenticate(cfg.username, cfg.password));
+    REQUIRE_NOTHROW(session->disconnect());
 }
 
 TEST_CASE("SSH session rejects wrong password", "[ssh_integration]") {
@@ -74,9 +83,9 @@ TEST_CASE("SSH session rejects wrong password", "[ssh_integration]") {
         return;
     }
 
-    ssh_session session;
-    REQUIRE_NOTHROW(session.connect(cfg.host, cfg.port));
-    REQUIRE_THROWS(session.authenticate(cfg.username, "__definitely_wrong_password__"));
+    auto session = std::make_shared<ssh_session>();
+    REQUIRE_NOTHROW(session->connect(cfg.host, cfg.port));
+    REQUIRE_THROWS(session->authenticate(cfg.username, "__definitely_wrong_password__"));
 }
 
 TEST_CASE("SSH session fails to connect to a bad host", "[ssh_integration]") {
@@ -86,9 +95,9 @@ TEST_CASE("SSH session fails to connect to a bad host", "[ssh_integration]") {
         return;
     }
 
-    ssh_session session;
+    auto session = std::make_shared<ssh_session>();
     // Port 1 is almost never open; expect a connection failure.
-    REQUIRE_THROWS(session.connect(cfg.host, 1));
+    REQUIRE_THROWS(session->connect(cfg.host, 1));
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -101,12 +110,10 @@ TEST_CASE("SSH channel can be opened and closed", "[ssh_integration]") {
         return;
     }
 
-    ssh_session session;
-    session.connect(cfg.host, cfg.port);
-    session.authenticate(cfg.username, cfg.password);
+    auto session = make_test_session(cfg);
 
     ssh_channel_ptr channel;
-    REQUIRE_NOTHROW(channel = session.open_channel());
+    REQUIRE_NOTHROW(channel = session->open_channel());
     REQUIRE(channel != nullptr);
     REQUIRE(channel->is_open());
 
@@ -121,11 +128,9 @@ TEST_CASE("SSH channel supports PTY request and shell", "[ssh_integration]") {
         return;
     }
 
-    ssh_session session;
-    session.connect(cfg.host, cfg.port);
-    session.authenticate(cfg.username, cfg.password);
+    auto session = make_test_session(cfg);
 
-    auto channel = session.open_channel();
+    auto channel = session->open_channel();
     REQUIRE(channel != nullptr);
 
     REQUIRE_NOTHROW(channel->request_pty("xterm-256color"));
@@ -142,11 +147,9 @@ TEST_CASE("SSH channel supports PTY resize", "[ssh_integration]") {
         return;
     }
 
-    ssh_session session;
-    session.connect(cfg.host, cfg.port);
-    session.authenticate(cfg.username, cfg.password);
+    auto session = make_test_session(cfg);
 
-    auto channel = session.open_channel();
+    auto channel = session->open_channel();
     channel->request_pty("xterm-256color");
     channel->shell();
 
